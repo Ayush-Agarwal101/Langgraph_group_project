@@ -1,17 +1,17 @@
 import uuid
 from typing import Any
 from langgraph.graph import StateGraph, END
-from langgraph_nodes import AppState, initial_state_node, login_node, logout_node, \
+# ✅ FIX: Removed the redundant 'initial_state_node'
+from langgraph_nodes import AppState, login_node, logout_node, \
     admin_menu_node, add_college_node, remove_college_node, list_colleges_node, \
     college_menu_node, add_teacher_node, remove_teacher_node, list_teachers_node, \
     teacher_menu_node, add_student_node, generate_assignment_node, send_assignment_node, \
     student_menu_node, get_assignments_node, submit_assignment_node, summarize_pdf_node
 
-# --- Graph workflow ---
+# --- Define the graph workflow ---
 workflow = StateGraph(AppState)
 
 # --- Add all nodes to the graph ---
-workflow.add_node("initial_state", initial_state_node)
 workflow.add_node("login", login_node)
 workflow.add_node("logout", logout_node)
 
@@ -36,8 +36,8 @@ workflow.add_node("submit_assignment", submit_assignment_node)
 workflow.add_node("summarize_pdf", summarize_pdf_node)
 
 # --- Define the graph's edges and routing logic ---
-workflow.set_entry_point("initial_state")
-workflow.add_edge("initial_state", "login")
+# ✅ FIX: Set 'login' as the true entry point and removed the old edge
+workflow.set_entry_point("login")
 
 def route_after_login(state: AppState): return state["current_role"]
 workflow.add_conditional_edges("login", route_after_login, {
@@ -47,13 +47,17 @@ workflow.add_conditional_edges("login", route_after_login, {
 
 def route_action(state: AppState):
     action = state.get("action", "").lower()
+    # ✅ FIX: If no action is present, return a special signal to end the current stream.
+    if not action:
+        return "END_OF_TURN"
     return "logout" if action == "logout" else action
 
 # Conditional routing from each menu to its actions
-workflow.add_conditional_edges("admin_menu", route_action, {"add_college": "add_college", "remove_college": "remove_college", "list_colleges": "list_colleges", "logout": "logout"})
-workflow.add_conditional_edges("college_menu", route_action, {"add_teacher": "add_teacher", "remove_teacher": "remove_teacher", "list_teachers": "list_teachers", "logout": "logout"})
-workflow.add_conditional_edges("teacher_menu", route_action, {"add_student": "add_student", "generate_assignment": "generate_assignment", "send_assignment": "send_assignment", "logout": "logout"})
-workflow.add_conditional_edges("student_menu", route_action, {"get_assignments": "get_assignments", "submit_assignment": "submit_assignment", "summarize_pdf": "summarize_pdf", "logout": "logout"})
+# ✅ FIX: Added the "END_OF_TURN" route to gracefully stop the stream after a menu.
+workflow.add_conditional_edges("admin_menu", route_action, {"add_college": "add_college", "remove_college": "remove_college", "list_colleges": "list_colleges", "logout": "logout", "END_OF_TURN": END})
+workflow.add_conditional_edges("college_menu", route_action, {"add_teacher": "add_teacher", "remove_teacher": "remove_teacher", "list_teachers": "list_teachers", "logout": "logout", "END_OF_TURN": END})
+workflow.add_conditional_edges("teacher_menu", route_action, {"add_student": "add_student", "generate_assignment": "generate_assignment", "send_assignment": "send_assignment", "logout": "logout", "END_OF_TURN": END})
+workflow.add_conditional_edges("student_menu", route_action, {"get_assignments": "get_assignments", "submit_assignment": "submit_assignment", "summarize_pdf": "summarize_pdf", "logout": "logout", "END_OF_TURN": END})
 
 # After an action, loop back to the corresponding menu
 workflow.add_edge("add_college", "admin_menu"); workflow.add_edge("remove_college", "admin_menu"); workflow.add_edge("list_colleges", "admin_menu")
@@ -84,16 +88,11 @@ if __name__ == '__main__':
     # Each 'stream' call represents one step in the state machine.
     state = {}
     
-    # Step 1: Initial state
-    for event in app.stream(None, config=config):
-        state = event
-    print(f"MESSAGE: {state[next(iter(state))]['message']}\n")
-
-    # Step 2: Admin Login
+    # ✅ FIX: Removed the initial call and start the test directly with the login attempt.
+    # Step 1: Admin Login
     print("--- Attempting Admin Login ---")
     inputs = {
         "user_data": {
-            # Change these to match in create_admin.py
             "email": "admin@example.com", 
             "password": "abcd1234" 
         }
@@ -130,3 +129,4 @@ if __name__ == '__main__':
         
         response = state[next(iter(state))]
         print(f"MESSAGE: {response['message']}\n")
+

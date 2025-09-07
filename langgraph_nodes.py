@@ -66,8 +66,13 @@ def student_menu_node(state: AppState) -> Dict:
 # Admin Actions
 def add_college_node(state: AppState) -> Dict:
     college, password = Admin.add_college(state["user_data"])
-    if college: return {"message": f"College '{college['name']}' added. Principal's temporary password: {password}"}
-    return {"message": "Failed to add college. Check data and try again."}
+    if college:
+        message = f"College '{college['name']}' added. Principal's temporary password: {password}"
+    else:
+        message = "Failed to add college. Check data and try again."
+        
+    # Clear the action to prevent an infinite loop.
+    return {"message": message, "action": ""} 
 
 def remove_college_node(state: AppState) -> Dict:
     if Admin.remove_college(state["user_data"]["college_id"]): return {"message": "College removed successfully."}
