@@ -1,7 +1,6 @@
 import uuid
 from typing import Any
 from langgraph.graph import StateGraph, END
-# ✅ FIX: Removed the redundant 'initial_state_node'
 from langgraph_nodes import AppState, login_node, logout_node, \
     admin_menu_node, add_college_node, remove_college_node, list_colleges_node, \
     college_menu_node, add_teacher_node, remove_teacher_node, list_teachers_node, \
@@ -129,4 +128,5 @@ if __name__ == '__main__':
         
         response = state[next(iter(state))]
         print(f"MESSAGE: {response['message']}\n")
+
 
