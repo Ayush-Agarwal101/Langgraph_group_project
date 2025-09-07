@@ -6,7 +6,7 @@ from passlib.hash import bcrypt
 from datetime import datetime
 from database import *
 from huggingface_hub import InferenceClient, login
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import UnstructuredPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.prompts import PromptTemplate
@@ -158,7 +158,7 @@ class Teacher(User):
     @staticmethod
     def generate_assignment(pdf_file, topic, num_mcq, num_short, num_long, teacher_id):
         try:
-            loader = PyPDFLoader(pdf_file)
+            loader = UnstructuredPDFLoader(pdf_file)
             documents = loader.load_and_split(text_splitter=RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200))
             vectorstore = FAISS.from_documents(documents, embeddings)
             retriever = vectorstore.as_retriever(search_kwargs={'k': 5})
@@ -241,7 +241,7 @@ class Student(User):
         elif status == "submitted":
             # Find assignments that ARE in their submitted list
             query = {"_id": {"$in": submitted_ids}}
-        else: # "all"
+        else:
             query = {"sent_to_classes": assigned_class}
         
         return list(assignments_collection.find(query))
@@ -283,7 +283,7 @@ Please grade the submission.
     @staticmethod
     def upload_pdf_for_summary(pdf_file, query):
         try:
-            loader = PyPDFLoader(pdf_file)
+            loader = UnstructuredPDFLoader(pdf_file)
             documents = loader.load_and_split(text_splitter=RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200))
             vectorstore = FAISS.from_documents(documents, embeddings)
             retriever = vectorstore.as_retriever(search_kwargs={'k': 5})
@@ -302,4 +302,3 @@ User Query: {query}
         except Exception as e:
             print(f"Error processing PDF for summary: {e}")
             return "Could not process the PDF file."
-

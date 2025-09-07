@@ -35,7 +35,6 @@ workflow.add_node("submit_assignment", submit_assignment_node)
 workflow.add_node("summarize_pdf", summarize_pdf_node)
 
 # --- Define the graph's edges and routing logic ---
-# ✅ FIX: Set 'login' as the true entry point and removed the old edge
 workflow.set_entry_point("login")
 
 def route_after_login(state: AppState): return state["current_role"]
@@ -46,13 +45,13 @@ workflow.add_conditional_edges("login", route_after_login, {
 
 def route_action(state: AppState):
     action = state.get("action", "").lower()
-    # ✅ FIX: If no action is present, return a special signal to end the current stream.
+    # If no action is present, return a special signal to end the current stream.
     if not action:
         return "END_OF_TURN"
     return "logout" if action == "logout" else action
 
 # Conditional routing from each menu to its actions
-# ✅ FIX: Added the "END_OF_TURN" route to gracefully stop the stream after a menu.
+# Added the "END_OF_TURN" route to gracefully stop the stream after a menu.
 workflow.add_conditional_edges("admin_menu", route_action, {"add_college": "add_college", "remove_college": "remove_college", "list_colleges": "list_colleges", "logout": "logout", "END_OF_TURN": END})
 workflow.add_conditional_edges("college_menu", route_action, {"add_teacher": "add_teacher", "remove_teacher": "remove_teacher", "list_teachers": "list_teachers", "logout": "logout", "END_OF_TURN": END})
 workflow.add_conditional_edges("teacher_menu", route_action, {"add_student": "add_student", "generate_assignment": "generate_assignment", "send_assignment": "send_assignment", "logout": "logout", "END_OF_TURN": END})
@@ -87,7 +86,7 @@ if __name__ == '__main__':
     # Each 'stream' call represents one step in the state machine.
     state = {}
     
-    # ✅ FIX: Removed the initial call and start the test directly with the login attempt.
+    # Start the test directly with the login attempt.
     # Step 1: Admin Login
     print("--- Attempting Admin Login ---")
     inputs = {
@@ -128,5 +127,4 @@ if __name__ == '__main__':
         
         response = state[next(iter(state))]
         print(f"MESSAGE: {response['message']}\n")
-
 
