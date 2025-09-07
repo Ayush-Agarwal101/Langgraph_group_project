@@ -10,6 +10,7 @@ from langchain_community.document_loaders import UnstructuredPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.prompts import PromptTemplate
+from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_community.vectorstores import FAISS
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -229,19 +230,16 @@ Your response must be a JSON object matching this schema:
 class Student(User):
     @staticmethod
     def get_assignments(student_id, assigned_class, status="pending"):
-        # Find all assignments this student has already submitted
         submitted_ids = [sub['assignment_id'] for sub in submissions_collection.find(
             {"student_id": student_id},
             {"assignment_id": 1}
         )]
         
         if status == "pending":
-            # Find assignments sent to the student's class that are NOT in their submitted list
             query = {"sent_to_classes": assigned_class, "_id": {"$nin": submitted_ids}}
         elif status == "submitted":
-            # Find assignments that ARE in their submitted list
             query = {"_id": {"$in": submitted_ids}}
-        else:
+        else: # "all"
             query = {"sent_to_classes": assigned_class}
         
         return list(assignments_collection.find(query))
@@ -256,42 +254,105 @@ class Student(User):
         student_answers_str = json.dumps(answers, indent=2)
         
         grade_prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-You are an intelligent grading assistant. Your task is to evaluate a student's submission against the official answer key.
-Provide a numerical score out of 100 and concise feedback for each question.
-Be fair and consider partial credit for answers that are conceptually correct but incomplete.
-<|eot_id|><|start_header_id|>user<|end_header_id|>
+You are an intelligent grading assistant. Your task is to evaluate a student's submission against the official answer key. Provide a numerical score out of 100 and concise feedback for each question. Be fair and consider partial credit for answers that are conceptually correct but incomplete.<|eot_id|><|start_header_id|>user<|end_header_id|>
 Official Answer Key:
 {answer_key}
 
 Student's Submitted Answers:
 {student_answers_str}
-
-Please grade the submission.
-<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+Please grade the submission.<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
         
         grading_result = llm.text_generation(prompt=grade_prompt, max_new_tokens=2048).strip()
         
         submissions_collection.insert_one({
-            "assignment_id": assignment_id,
-            "student_id": student_id,
-            "submitted_answers": answers,
-            "grading_result": grading_result,
-            "submitted_at": datetime.now()
+            "assignment_id": assignment_id, "student_id": student_id, "submitted_answers": answers,
+            "grading_result": grading_result, "submitted_at": datetime.now()
         })
         return grading_result
 
     @staticmethod
-    def upload_pdf_for_summary(pdf_file, query):
+    def upload_pdf_for_summary(pdf_file, query, student_id):
+        vector_store = None
+
+        # --- OPTION 1: SAVE VECTOR STORE TO LOCAL FILES (for testing)  ---
+        VECTOR_STORE_DIR = "./student_vector_stores"
+        os.makedirs(VECTOR_STORE_DIR, exist_ok=True)
+        doc_uid = f"{student_id}_{os.path.basename(pdf_file)}"
+        vectorstore_path = os.path.join(VECTOR_STORE_DIR, doc_uid)
+        store_record = student_vector_stores_collection.find_one({"_id": doc_uid})
+        
+        if store_record and os.path.exists(vectorstore_path):
+            print("✅ Loading existing vector store from disk...")
+            vector_store = FAISS.load_local(vectorstore_path, embeddings, allow_dangerous_deserialization=True)
+        else:
+            print("⏳ No existing vector store found locally. Creating a new one...")
+            try:
+                loader = UnstructuredPDFLoader(pdf_file)
+                documents = loader.load_and_split(text_splitter=RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200))
+                if documents:
+                    vector_store = FAISS.from_documents(documents, embeddings)
+                    vector_store.save_local(vectorstore_path)
+                    student_vector_stores_collection.update_one(
+                        {"_id": doc_uid},
+                        {"$set": {"student_id": student_id, "original_filename": os.path.basename(pdf_file), "path": vectorstore_path, "created_at": datetime.now()}},
+                        upsert=True
+                    )
+                    print(f"✅ New vector store saved to {vectorstore_path}")
+                else:
+                    return "Could not extract any text from the PDF."
+            except Exception as e:
+                print(f"Error processing PDF for summary (local save): {e}")
+                return "Could not process the PDF file."
+
+        # --- OPTION 2: SAVE EMBEDDINGS TO MONGODB ATLAS ---
+        # To use this, comment out OPTION 1 and uncomment this block.
+        """
+        COLLECTION_NAME = "student_embeddings"
+        INDEX_NAME = "vector_index"
+        collection = db[COLLECTION_NAME]
+        doc_uid = f"{student_id}_{os.path.basename(pdf_file)}"
+
+        if collection.count_documents({"metadata.doc_uid": doc_uid}) > 0:
+            print("✅ Loading existing vector store from MongoDB...")
+            vector_store = MongoDBAtlasVectorSearch(collection=collection, embedding=embeddings, index_name=INDEX_NAME)
+        else:
+            print("⏳ No existing vector store found in MongoDB. Creating a new one...")
+            try:
+                loader = UnstructuredPDFLoader(pdf_file)
+                documents = loader.load_and_split(text_splitter=RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200))
+                if not documents:
+                    return "Could not extract any text from the PDF."
+
+                for doc in documents:
+                    doc.metadata["doc_uid"] = doc_uid
+                    doc.metadata["student_id"] = student_id
+                    doc.metadata["original_filename"] = os.path.basename(pdf_file)
+
+                vector_store = MongoDBAtlasVectorSearch.from_documents(
+                    documents=documents, embedding=embeddings, collection=collection, index_name=INDEX_NAME
+                )
+                print(f"✅ New vector store saved to MongoDB for doc_uid: {doc_uid}")
+            except Exception as e:
+                print(f"Error processing PDF for summary (MongoDB save): {e}")
+                return "Could not process the PDF file."
+        """
+
+        if not vector_store:
+            return "Vector store could not be created or loaded."
+
         try:
-            loader = UnstructuredPDFLoader(pdf_file)
-            documents = loader.load_and_split(text_splitter=RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200))
-            vectorstore = FAISS.from_documents(documents, embeddings)
-            retriever = vectorstore.as_retriever(search_kwargs={'k': 5})
+            # For FAISS, the whole store is already specific to the document.
+            # For MongoDB, a pre-filter is needed to isolate the correct document chunks.
+            if isinstance(vector_store, MongoDBAtlasVectorSearch):
+                retriever = vector_store.as_retriever(
+                    search_kwargs={'pre_filter': {'metadata.doc_uid': {'$eq': doc_uid}}}
+                )
+            else: # FAISS
+                retriever = vector_store.as_retriever()
             
             template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 You are a helpful assistant. Provide a concise summary of the document text and then answer the user's specific question based on it.<|eot_id|><|start_header_id|>user<|end_header_id|>
 Document Text: {context}
-
 User Query: {query}
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
             
@@ -300,5 +361,5 @@ User Query: {query}
             summary_response = llm.text_generation(prompt=rag_prompt.format(context=context_text, query=query), max_new_tokens=2048).strip()
             return summary_response
         except Exception as e:
-            print(f"Error processing PDF for summary: {e}")
-            return "Could not process the PDF file."
+            print(f"Error during RAG query: {e}")
+            return "Could not retrieve an answer from the document."

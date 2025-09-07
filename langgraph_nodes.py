@@ -70,7 +70,7 @@ def add_college_node(state: AppState) -> Dict:
         message = f"College '{college['name']}' added. Principal's temporary password: {password}"
     else:
         message = "Failed to add college. Check data and try again."
-        
+
     # Clear the action to prevent an infinite loop.
     return {"message": message, "action": ""} 
 
@@ -126,5 +126,13 @@ def submit_assignment_node(state: AppState) -> Dict:
     return {"message": f"--- Grade ---\n{result}"}
 
 def summarize_pdf_node(state: AppState) -> Dict:
-    summary = Student.upload_pdf_for_summary(state["user_data"]["pdf_file_path"], state["user_data"]["query"])
+    # 1. Get the student's unique database ID from the context
+    student_id = state["user_context"]["student_db_id"]
+    
+    # 2. Pass the ID to the model function
+    summary = Student.upload_pdf_for_summary(
+        state["user_data"]["pdf_file_path"], 
+        state["user_data"]["query"],
+        student_id 
+    )
     return {"message": f"--- Summary & Answer ---\n{summary}"}

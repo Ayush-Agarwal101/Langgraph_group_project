@@ -1,0 +1,31 @@
+# Core LangChain and LangGraph libraries
+langchain
+langgraph
+langchain-community
+langchain-text-splitters
+langchain_mongodb
+langchain-huggingface
+
+# Hugging Face client for LLM inference
+huggingface-hub
+
+# Database connector for MongoDB
+pymongo
+
+# PDF Loader
+unstructured[pdf]
+
+# Vector store for RAG
+Use faiss-cpu since you are on a CPU machine
+faiss-cpu
+
+# Password hashing and security
+passlib
+bcrypt
+
+# Pydantic, dotenv
+pydantic
+python-dotenv
+
+# SSL certificate handling for secure database connections
+certifi
