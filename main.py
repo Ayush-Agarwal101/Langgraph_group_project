@@ -43,12 +43,10 @@ workflow.add_conditional_edges("login", route_after_login, {
 
 def route_action(state: AppState):
     action = state.get("action", "").lower()
-    # ✅ FIX: If no action is present, return a special signal to end the current turn.
     if not action:
         return "END_OF_TURN"
     return "logout" if action == "logout" else action
 
-# ✅ FIX: Added the "END_OF_TURN": END path to every menu.
 # This is the "exit ramp" that tells the invoke call to stop when an action is complete.
 workflow.add_conditional_edges("admin_menu", route_action, {"add_college": "add_college", "remove_college": "remove_college", "list_colleges": "list_colleges", "logout": "logout", "END_OF_TURN": END})
 workflow.add_conditional_edges("college_menu", route_action, {"add_teacher": "add_teacher", "remove_teacher": "remove_teacher", "list_teachers": "list_teachers", "logout": "logout", "END_OF_TURN": END})
@@ -67,4 +65,5 @@ workflow.add_edge("logout", END)
 # --- Compile the graph ---
 app = workflow.compile()
 print("✅ LangGraph application compiled successfully with all features!")
+
 
