@@ -40,16 +40,13 @@ def login_node(state: AppState) -> Dict:
 def logout_node(state: AppState) -> Dict:
     return {"current_role": "unauthenticated", "current_user_id": None, "user_context": {}, "user_data": {}, "action": "", "message": "You have been logged out."}
 
-# --- Menu Nodes (Updated with all actions) ---
+# --- Menu Nodes ---
 def admin_menu_node(state: AppState) -> Dict:
     return {"message": "ADMIN MENU | Actions: [add_college, remove_college, list_colleges, logout]"}
-
 def college_menu_node(state: AppState) -> Dict:
     return {"message": "COLLEGE MENU | Actions: [add_teacher, remove_teacher, list_teachers, logout]"}
-
 def teacher_menu_node(state: AppState) -> Dict:
     return {"message": "TEACHER MENU | Actions: [add_student, generate_assignment, send_assignment, logout]"}
-
 def student_menu_node(state: AppState) -> Dict:
     return {"message": "STUDENT MENU | Actions: [get_assignments, submit_assignment, summarize_pdf, logout]"}
 
@@ -115,3 +112,4 @@ def summarize_pdf_node(state: AppState) -> Dict:
     student_id = state["user_context"]["student_db_id"]
     summary = Student.upload_pdf_for_summary(state["user_data"]["pdf_file_path"], state["user_data"]["query"], student_id)
     return {"message": f"--- Summary & Answer ---\n{summary}", "action": ""}
+
