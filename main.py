@@ -1,5 +1,7 @@
 # main.py
 
+# main.py
+
 import uuid
 from langgraph.graph import StateGraph, END
 from langgraph_nodes import (
@@ -8,8 +10,15 @@ from langgraph_nodes import (
     admin_menu_node, add_college_node, remove_college_node, list_colleges_node,
     college_menu_node, add_teacher_node, remove_teacher_node, list_teachers_node,
     teacher_menu_node, add_student_node, generate_assignment_node, send_assignment_node,
+from langgraph_nodes import (
+    AppState,
+    login_node, logout_node,
+    admin_menu_node, add_college_node, remove_college_node, list_colleges_node,
+    college_menu_node, add_teacher_node, remove_teacher_node, list_teachers_node,
+    teacher_menu_node, add_student_node, generate_assignment_node, send_assignment_node,
     student_menu_node, get_assignments_node, submit_assignment_node, summarize_pdf_node
 )
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.memory import MemorySaver
 
 # --- Define the graph workflow ---
@@ -44,6 +53,7 @@ workflow.add_node("summarize_pdf_node",summarize_pdf_node)
 workflow.set_entry_point("login_node")
 
 # --- Routing after login ---
+# --- Routing after login ---
 def route_after_login(state: AppState):
     return state.get("current_role", "admin")
 
@@ -55,6 +65,7 @@ workflow.add_conditional_edges("login_node", route_after_login, {
     "unauthenticated": "login_node"
 })
 
+# --- Route actions in menus ---
 # --- Route actions in menus ---
 def route_action(state: AppState):
     action = (state.get("action") or "").lower()
@@ -121,5 +132,6 @@ app = workflow.compile(checkpointer=checkpointer)
 
 print("✅ LangGraph application compiled successfully!")
 
+# --- Optional: global recursion limit ---
 # --- Optional: global recursion limit ---
 config = {"configurable": {"recursion_limit": 30}}
