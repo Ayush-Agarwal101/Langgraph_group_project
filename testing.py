@@ -67,6 +67,7 @@ def run_full_test():
     # Login as Admin
     admin_login_inputs = {"user_data": ADMIN_CREDENTIALS}
     response = run_step(config, "Admin Login", admin_login_inputs)
+    print("Logged in as Admin")
     if response.get("current_role") != "admin":
         print("❌ TEST FAILED: Admin login was unsuccessful.")
         return
@@ -76,6 +77,7 @@ def run_full_test():
     response = run_step(config, "Admin Adds College", add_college_inputs)
     try:
         # Extract the temporary password for the new college principal
+        print("College added")
         college_password = response['message'].split("password: ")[1]
         college_creds = {"email": COLLEGE_DATA["email"], "password": college_password}
     except (KeyError, IndexError):
