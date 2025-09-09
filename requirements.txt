@@ -16,12 +16,12 @@ pymongo
 unstructured[pdf]
 
 # Vector store for RAG
-Use faiss-cpu since you are on a CPU machine
+# Use faiss-cpu since you are on a CPU machine
 faiss-cpu
 
 # Password hashing and security
 passlib
-bcrypt
+bcrypt==3.2.2
 
 # Pydantic, dotenv
 pydantic

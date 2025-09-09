@@ -33,7 +33,7 @@ workflow.add_node("summarize_pdf", summarize_pdf_node)
 # --- Define the graph's edges and routing logic ---
 workflow.set_entry_point("login")
 
-def route_after_login(state: AppState): 
+def route_after_login(state: AppState):
     return state["current_role"]
 
 workflow.add_conditional_edges("login", route_after_login, {
@@ -42,28 +42,64 @@ workflow.add_conditional_edges("login", route_after_login, {
 })
 
 def route_action(state: AppState):
-    action = state.get("action", "").lower()
+    action = (state.get("action") or "").lower()
     if not action:
         return "END_OF_TURN"
+
+    # ✅ Reset action after execution to avoid infinite recursion loops
+    state["action"] = ""
+
     return "logout" if action == "logout" else action
 
 # This is the "exit ramp" that tells the invoke call to stop when an action is complete.
-workflow.add_conditional_edges("admin_menu", route_action, {"add_college": "add_college", "remove_college": "remove_college", "list_colleges": "list_colleges", "logout": "logout", "END_OF_TURN": END})
-workflow.add_conditional_edges("college_menu", route_action, {"add_teacher": "add_teacher", "remove_teacher": "remove_teacher", "list_teachers": "list_teachers", "logout": "logout", "END_OF_TURN": END})
-workflow.add_conditional_edges("teacher_menu", route_action, {"add_student": "add_student", "generate_assignment": "generate_assignment", "send_assignment": "send_assignment", "logout": "logout", "END_OF_TURN": END})
-workflow.add_conditional_edges("student_menu", route_action, {"get_assignments": "get_assignments", "submit_assignment": "submit_assignment", "summarize_pdf": "summarize_pdf", "logout": "logout", "END_OF_TURN": END})
+workflow.add_conditional_edges("admin_menu", route_action, {
+    "add_college": "add_college", "remove_college": "remove_college", "list_colleges": "list_colleges",
+    "logout": "logout", "END_OF_TURN": END
+})
+workflow.add_conditional_edges("college_menu", route_action, {
+    "add_teacher": "add_teacher", "remove_teacher": "remove_teacher", "list_teachers": "list_teachers",
+    "logout": "logout", "END_OF_TURN": END
+})
+workflow.add_conditional_edges("teacher_menu", route_action, {
+    "add_student": "add_student", "generate_assignment": "generate_assignment", "send_assignment": "send_assignment",
+    "logout": "logout", "END_OF_TURN": END
+})
+workflow.add_conditional_edges("student_menu", route_action, {
+    "get_assignments": "get_assignments", "submit_assignment": "submit_assignment", "summarize_pdf": "summarize_pdf",
+    "logout": "logout", "END_OF_TURN": END
+})
 
 # After an action, loop back to the corresponding menu
-workflow.add_edge("add_college", "admin_menu"); workflow.add_edge("remove_college", "admin_menu"); workflow.add_edge("list_colleges", "admin_menu")
-workflow.add_edge("add_teacher", "college_menu"); workflow.add_edge("remove_teacher", "college_menu"); workflow.add_edge("list_teachers", "college_menu")
-workflow.add_edge("add_student", "teacher_menu"); workflow.add_edge("generate_assignment", "teacher_menu"); workflow.add_edge("send_assignment", "teacher_menu")
-workflow.add_edge("get_assignments", "student_menu"); workflow.add_edge("submit_assignment", "student_menu"); workflow.add_edge("summarize_pdf", "student_menu")
+workflow.add_edge("add_college", "admin_menu")
+workflow.add_edge("remove_college", "admin_menu")
+workflow.add_edge("list_colleges", "admin_menu")
+
+workflow.add_edge("add_teacher", "college_menu")
+workflow.add_edge("remove_teacher", "college_menu")
+workflow.add_edge("list_teachers", "college_menu")
+
+workflow.add_edge("add_student", "teacher_menu")
+workflow.add_edge("generate_assignment", "teacher_menu")
+workflow.add_edge("send_assignment", "teacher_menu")
+
+workflow.add_edge("get_assignments", "student_menu")
+workflow.add_edge("submit_assignment", "student_menu")
+workflow.add_edge("summarize_pdf", "student_menu")
 
 # The logout node is the only way to the end of the graph
 workflow.add_edge("logout", END)
 
 # --- Compile the graph ---
-app = workflow.compile()
+from langgraph.checkpoint.memory import MemorySaver  # ✅ required for app.get_state()
+
+checkpointer = MemorySaver()
+app = workflow.compile(checkpointer=checkpointer)
+
 print("✅ LangGraph application compiled successfully with all features!")
+from langgraph.checkpoint.memory import MemorySaver
 
+checkpointer = MemorySaver()
+app = workflow.compile(checkpointer=checkpointer)
 
+# Add recursion limit
+config = {"configurable": {"recursion_limit": 30}}

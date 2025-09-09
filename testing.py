@@ -7,29 +7,31 @@ import os
 from typing import Any, Dict
 
 # --- HELPER FUNCTION ---
-def run_step(config: Dict, step_name: str, inputs: Dict | None = None) -> Dict:
-    """
-    A helper to run a step in the graph, print the output, and return the final state.
-    It now uses app.get_state() to ensure it gets the full, final state.
-    """
-    print(f"\n{'='*20}\n▶️  STEP: {step_name}\n{'='*20}")
-    
-    # Use a placeholder for the initial run which has no input
-    run_input = inputs if inputs is not None else {"user_data": {}}
-    
-    # Run the stream to completion. We don't need the intermediate steps,
-    # just the side effect of the state being updated.
-    for _ in app.stream(run_input, config=config):
-        pass
+def run_step(config, step_name, inputs):
+    print("\n" + "="*20)
+    print(f"▶️  STEP: {step_name}")
+    print("="*20)
 
-    # ✅ FIX: After the stream is done, explicitly get the final state for the session.
-    final_state_snapshot = app.get_state(config)
-    
-    # The final state is stored in the 'values' attribute of the snapshot
-    response = final_state_snapshot.values
-    
-    print(f"✅ RESPONSE: {response.get('message', 'No message returned.')}")
-    return response
+    # Feed user input for this step
+    run_input = {"user_input": inputs}
+
+    # Run one turn of the graph
+    events = app.stream(run_input, config=config)
+
+    final_state_snapshot = None
+    for event in events:
+        if "dialog_state" in event:
+            final_state_snapshot = event["dialog_state"]
+
+        if "messages" in event:
+            for msg in event["messages"]:
+                if isinstance(msg, dict) and "message" in msg:
+                    print("✅ RESPONSE:", msg["message"])
+                elif isinstance(msg, str):
+                    print("✅ RESPONSE:", msg)
+
+    return final_state_snapshot
+
 
 # --- MAIN TEST FUNCTION ---
 def run_full_test():
