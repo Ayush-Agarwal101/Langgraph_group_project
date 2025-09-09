@@ -1,207 +1,119 @@
-# langgraph_nodes.py
+# file: langgraph_nodes.py
 
-from typing import Dict
+from typing import TypedDict, Literal, Optional, Dict, Any
 from passlib.hash import bcrypt
-
-# --- Shared AppState type ---
-AppState = Dict[str, any]
+from database import users_collection, colleges_collection, teachers_collection, students_collection
 
 
-# ==========================
-# LOGIN / LOGOUT NODES
-# ==========================
+# --- State Definition ---
+class AppState(TypedDict, total=False):
+    current_role: Literal["admin", "college", "teacher", "student", "unauthenticated"]
+    current_user_id: Optional[str]
+    action: Optional[str]
+    user_input: Optional[str]
+    response: Optional[str]   # 👈 NEW field for menu or status messages
 
+
+# --- Helper ---
+def make_response(state: AppState, message: str) -> AppState:
+    state["response"] = message
+    return state
+
+
+# --- Nodes ---
 def login_node(state: AppState) -> AppState:
-    """
-    Handles login and sets role.
-    """
-    user_input = state.get("user_input", "").strip().lower()
-
-    # Example fake login
-    if user_input == "admin":
-        state["current_role"] = "admin"
-        state["message"] = "✅ Logged in as Admin"
-    elif user_input == "college":
-        state["current_role"] = "college"
-        state["message"] = "✅ Logged in as College"
-    elif user_input == "teacher":
-        state["current_role"] = "teacher"
-        state["message"] = "✅ Logged in as Teacher"
-    elif user_input == "student":
-        state["current_role"] = "student"
-        state["message"] = "✅ Logged in as Student"
+    user_input = str(state.get("user_input", "")).strip().lower()
+    user_doc = users_collection.find_one({"email": user_input})
+    if user_doc and bcrypt.verify(state.get("password", ""), user_doc["_password_hash"]):
+        state["current_user_id"] = user_doc["_id"]
+        state["current_role"] = user_doc["role"]
+        return make_response(state, f"✅ Logged in as {user_doc['role'].upper()} | Actions: [...]")
     else:
         state["current_role"] = "unauthenticated"
-        state["message"] = "❌ Login failed. Try again."
-
-    return state
+        return make_response(state, "❌ Invalid login. Please try again.")
 
 
 def logout_node(state: AppState) -> AppState:
-    """
-    Logs out the current user.
-    """
     state["current_role"] = "unauthenticated"
-    state["action"] = "END_OF_TURN"
-    state["message"] = "✅ Logged out successfully."
-    return state
+    state["current_user_id"] = None
+    return make_response(state, "👋 You have been logged out.")
 
-
-# ==========================
-# ADMIN MENU
-# ==========================
 
 def admin_menu_node(state: AppState) -> AppState:
-    """
-    Admin menu: stops until user chooses an action.
-    """
-    user_input = state.get("user_input", "").strip().lower()
+    return make_response(state, "ADMIN MENU | Actions: [add_college, remove_college, list_colleges, logout]")
 
-    valid_actions = {
-        "add_college": "add_college",
-        "remove_college": "remove_college",
-        "list_colleges": "list_colleges",
-        "logout": "logout",
-    }
-
-    if user_input in valid_actions:
-        state["action"] = valid_actions[user_input]
-    else:
-        state["action"] = "END_OF_TURN"  # ✅ stop recursion
-
-    state["message"] = "ADMIN MENU | Actions: [add_college, remove_college, list_colleges, logout]"
-    return state
-
-
-# ==========================
-# COLLEGE MENU
-# ==========================
 
 def college_menu_node(state: AppState) -> AppState:
-    """
-    College menu: stops until user chooses an action.
-    """
-    user_input = state.get("user_input", "").strip().lower()
+    return make_response(state, "COLLEGE MENU | Actions: [add_teacher, remove_teacher, list_teachers, logout]")
 
-    valid_actions = {
-        "add_teacher": "add_teacher",
-        "remove_teacher": "remove_teacher",
-        "list_teachers": "list_teachers",
-        "logout": "logout",
-    }
-
-    if user_input in valid_actions:
-        state["action"] = valid_actions[user_input]
-    else:
-        state["action"] = "END_OF_TURN"
-
-    state["message"] = "COLLEGE MENU | Actions: [add_teacher, remove_teacher, list_teachers, logout]"
-    return state
-
-
-# ==========================
-# TEACHER MENU
-# ==========================
 
 def teacher_menu_node(state: AppState) -> AppState:
-    """
-    Teacher menu: stops until user chooses an action.
-    """
-    user_input = state.get("user_input", "").strip().lower()
+    return make_response(state, "TEACHER MENU | Actions: [add_student, generate_assignment, send_assignment, logout]")
 
-    valid_actions = {
-        "add_student": "add_student",
-        "generate_assignment": "generate_assignment",
-        "send_assignment": "send_assignment",
-        "logout": "logout",
-    }
-
-    if user_input in valid_actions:
-        state["action"] = valid_actions[user_input]
-    else:
-        state["action"] = "END_OF_TURN"
-
-    state["message"] = "TEACHER MENU | Actions: [add_student, generate_assignment, send_assignment, logout]"
-    return state
-
-
-# ==========================
-# STUDENT MENU
-# ==========================
 
 def student_menu_node(state: AppState) -> AppState:
-    """
-    Student menu: stops until user chooses an action.
-    """
-    user_input = state.get("user_input", "").strip().lower()
-
-    valid_actions = {
-        "get_assignments": "get_assignments",
-        "submit_assignment": "submit_assignment",
-        "summarize_pdf": "summarize_pdf",
-        "logout": "logout",
-    }
-
-    if user_input in valid_actions:
-        state["action"] = valid_actions[user_input]
-    else:
-        state["action"] = "END_OF_TURN"
-
-    state["message"] = "STUDENT MENU | Actions: [get_assignments, submit_assignment, summarize_pdf, logout]"
-    return state
+    return make_response(state, "STUDENT MENU | Actions: [get_assignments, submit_assignment, summarize_pdf, logout]")
 
 
-# ==========================
-# PLACEHOLDER ACTION NODES
-# ==========================
-
+# --- Admin Actions ---
 def add_college_node(state: AppState) -> AppState:
-    state["message"] = "✅ College added successfully!"
-    return state
+    college_name = state.get("user_input", "Unnamed College")
+    colleges_collection.insert_one({"_id": college_name})
+    return make_response(state, f"✅ College '{college_name}' added successfully!")
+
 
 def remove_college_node(state: AppState) -> AppState:
-    state["message"] = "✅ College removed successfully!"
-    return state
+    college_name = state.get("user_input", "Unnamed College")
+    colleges_collection.delete_one({"_id": college_name})
+    return make_response(state, f"🗑️ College '{college_name}' removed.")
+
 
 def list_colleges_node(state: AppState) -> AppState:
-    state["message"] = "📋 Colleges: [College1, College2]"
-    return state
+    colleges = [c["_id"] for c in colleges_collection.find()]
+    return make_response(state, f"🏫 Colleges: {', '.join(colleges) if colleges else 'None found'}")
 
 
+# --- College Actions ---
 def add_teacher_node(state: AppState) -> AppState:
-    state["message"] = "✅ Teacher added successfully!"
-    return state
+    teacher_name = state.get("user_input", "Unnamed Teacher")
+    teachers_collection.insert_one({"_id": teacher_name})
+    return make_response(state, f"✅ Teacher '{teacher_name}' added.")
+
 
 def remove_teacher_node(state: AppState) -> AppState:
-    state["message"] = "✅ Teacher removed successfully!"
-    return state
+    teacher_name = state.get("user_input", "Unnamed Teacher")
+    teachers_collection.delete_one({"_id": teacher_name})
+    return make_response(state, f"🗑️ Teacher '{teacher_name}' removed.")
+
 
 def list_teachers_node(state: AppState) -> AppState:
-    state["message"] = "📋 Teachers: [Teacher1, Teacher2]"
-    return state
+    teachers = [t["_id"] for t in teachers_collection.find()]
+    return make_response(state, f"👨‍🏫 Teachers: {', '.join(teachers) if teachers else 'None found'}")
 
 
+# --- Teacher Actions ---
 def add_student_node(state: AppState) -> AppState:
-    state["message"] = "✅ Student added successfully!"
-    return state
+    student_name = state.get("user_input", "Unnamed Student")
+    students_collection.insert_one({"_id": student_name})
+    return make_response(state, f"✅ Student '{student_name}' added.")
+
 
 def generate_assignment_node(state: AppState) -> AppState:
-    state["message"] = "📝 Assignment generated!"
-    return state
+    return make_response(state, "📄 Assignment generated successfully!")
+
 
 def send_assignment_node(state: AppState) -> AppState:
-    state["message"] = "📩 Assignment sent to students!"
-    return state
+    return make_response(state, "✉️ Assignment sent to students.")
 
 
+# --- Student Actions ---
 def get_assignments_node(state: AppState) -> AppState:
-    state["message"] = "📚 You have 2 pending assignments."
-    return state
+    return make_response(state, "📚 Here are your assignments.")
+
 
 def submit_assignment_node(state: AppState) -> AppState:
-    state["message"] = "✅ Assignment submitted!"
-    return state
+    return make_response(state, "✅ Assignment submitted!")
+
 
 def summarize_pdf_node(state: AppState) -> AppState:
-    state["message"] = "📄 PDF summarized successfully!"
-    return state
+    return make_response(state, "📑 PDF summary generated.")
