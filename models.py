@@ -1,365 +1,273 @@
 import uuid
-import re
-import json
 import os
+import re
+from typing import Dict, Any, List, Tuple
 from passlib.hash import bcrypt
-from datetime import datetime
-from database import *
-from huggingface_hub import InferenceClient, login
-from langchain_community.document_loaders import UnstructuredPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.prompts import PromptTemplate
-from langchain_mongodb import MongoDBAtlasVectorSearch
-from langchain_community.vectorstores import FAISS
-from pydantic import BaseModel, Field
-from typing import List, Optional
-from dotenv import load_dotenv
+from datetime import datetime, timezone
+import ai_services 
+import tempfile
 
-load_dotenv()
+# New imports for the RAG preprocessing pipeline
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-# --- Hugging Face Setup ---
-HUGGING_FACE_TOKEN = os.environ.get("HUGGING_FACE_TOKEN")
-if HUGGING_FACE_TOKEN:
-    login(token=HUGGING_FACE_TOKEN)
-else:
-    print("⚠️ Hugging Face token not found. Set HUGGING_FACE_TOKEN in your .env file for full functionality.")
+from database import (
+    users_collection, colleges_collection, classes_collection,
+    enrollments_collection, study_materials_collection, assignments_collection,
+    submissions_collection, attendance_collection, fs,
+    study_material_chunks_collection # Import new collection
+)
 
-MODEL_NAME = os.environ.get("HF_MODEL_NAME", "meta-llama/Meta-Llama-3-8B-Instruct")
-EMBEDDINGS_MODEL = os.environ.get("HF_EMBEDDINGS_MODEL", "BAAI/bge-small-en-v1.5")
+# --- Base User Class ---
+class User:
+    def __init__(self, _id: str, name: str, email: str, role: str, **kwargs):
+        self._id = _id
+        self.name = name
+        self.email = email
+        self.role = role
+        self._raw_doc = kwargs
+        self._raw_doc.update({"_id": _id, "name": name, "email": email, "role": role})
 
-llm = InferenceClient(model=MODEL_NAME)
-embeddings = HuggingFaceEmbeddings(model_name=EMBEDDINGS_MODEL)
+    @staticmethod
+    def hash_password(password: str) -> str:
+        return bcrypt.hash(password)
 
-
-# --- Pydantic Models for Structured LLM Output ---
-class MCQ(BaseModel):
-    question: str
-    options: List[str]
-    correct_answer: str
-
-class ShortAnswer(BaseModel):
-    question: str
-    answer: str
-
-class LongAnswer(BaseModel):
-    question: str
-    answer: str
-
-class QuizAndAnswerKey(BaseModel):
-    mcqs: List[MCQ] = Field(description="A list of multiple-choice questions.")
-    short_answers: List[ShortAnswer] = Field(description="A list of short answer questions.")
-    long_answers: List[LongAnswer] = Field(description="A list of long answer questions.")
-
-
-# --- Mixins and Base Class ---
-class PasswordMixin:
-    _password_hash: Optional[str] = None
-    @property
-    def password(self): return "****"
-    @password.setter
-    def password(self, plain_text): self._password_hash = bcrypt.hash(plain_text)
-    def verify_password(self, plain_text):
-        if self._password_hash is None:
-            return False
-        return bcrypt.verify(plain_text, self._password_hash)
-
-class User(PasswordMixin):
-    def __init__(self, _id, name, age, address, phone_no, email, password, role):
-        if not self._is_valid_phone(phone_no): raise ValueError("Invalid phone number format.")
-        if not self._is_valid_email(email): raise ValueError("Invalid email address format.")
-        if not self._is_valid_age(age): raise ValueError("Please enter a correct age.")
-        self._id, self.name, self.age, self.address, self.phone_no, self.email, self.role = _id, name, age, address, phone_no, email, role
-        self.password = password
-
-    def _is_valid_phone(self, phone_no): return bool(re.match(r'^\d{10,15}$', str(phone_no)))
-    def _is_valid_email(self, email): return bool(re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email))
-    def _is_valid_age(self, age):
-        try: return 0 < int(age) < 120
-        except (ValueError, TypeError): return False
+    @staticmethod
+    def verify_password(password: str, password_hash: str) -> bool:
+        return bcrypt.verify(password, password_hash) if password and password_hash else False
 
 # --- Admin Class ---
 class Admin(User):
-    def __init__(self, _id, name, age, address, phone_no, email, password):
-        super().__init__(_id, name, age, address, phone_no, email, password, role="admin")
-    
-    @staticmethod
-    def add_college(college_data):
-        try:
-            principal_password = str(uuid.uuid4())[:8]
-            principal_user = User(_id=str(uuid.uuid4()), name=college_data['principal_name'], age=college_data.get('principal_age'), address=college_data.get('principal_address'), phone_no=college_data['phone_no'], email=college_data['email'], password=principal_password, role="college")
-            
-            user_doc = {"_id": principal_user._id, "name": principal_user.name, "email": principal_user.email, "_password_hash": principal_user._password_hash, "role": "college"}
-            users_collection.insert_one(user_doc)
-
-            college_doc = {"_id": str(uuid.uuid4()), "name": college_data['name'], "principal_name": college_data['principal_name'], "email": college_data['email'], "principal_user_id": principal_user._id, "active": True}
-            colleges_collection.insert_one(college_doc)
-            return college_doc, principal_password
-        except (ValueError, KeyError) as e:
-            print(f"Error adding college: {e}")
-            return None, None
-            
-    @staticmethod
-    def remove_college(college_id):
-        result = colleges_collection.update_one({"_id": college_id}, {"$set": {"active": False}})
-        return result.modified_count > 0
+    def add_college(self, data: Dict[str, Any]) -> Tuple[Dict, str]:
+        if users_collection.find_one({"email": data["email"]}):
+            raise ValueError(f"User with email {data['email']} already exists.")
         
-    @staticmethod
-    def list_colleges(include_inactive=False):
-        query = {} if include_inactive else {"active": True}
-        return list(colleges_collection.find(query))
+        password = str(uuid.uuid4())[:8]
+        principal_user = {
+            "_id": str(uuid.uuid4()), "name": data["principal_name"], "email": data["email"],
+            "_password_hash": self.hash_password(password), "role": "college", "active": True
+        }
+        users_collection.insert_one(principal_user)
+        
+        college = {
+            "_id": str(uuid.uuid4()), "name": data["name"], "address": data["address"],
+            "principal_user_id": principal_user["_id"], "active": True
+        }
+        colleges_collection.insert_one(college)
+        return college, password
 
-# --- College Class ---
-class College(PasswordMixin):
-    @staticmethod
-    def add_teacher(teacher_data, college_id):
-        try:
-            teacher_password = str(uuid.uuid4())[:8]
-            teacher_user = User(_id=str(uuid.uuid4()), name=teacher_data['name'], age=teacher_data['age'], address=teacher_data['address'], phone_no=teacher_data['phone_no'], email=teacher_data['email'], password=teacher_password, role="teacher")
-            
-            user_doc = {"_id": teacher_user._id, "name": teacher_user.name, "email": teacher_user.email, "_password_hash": teacher_user._password_hash, "role": "teacher"}
-            users_collection.insert_one(user_doc)
+    def list_colleges(self, active=True) -> List[Dict]:
+        return list(colleges_collection.find({"active": active}))
 
-            teacher_doc = {"_id": str(uuid.uuid4()), "name": teacher_data['name'], "email": teacher_data['email'], "assigned_class": teacher_data['assigned_class'], "college_id": college_id, "teacher_user_id": teacher_user._id, "active": True}
-            teachers_collection.insert_one(teacher_doc)
-            return teacher_doc, teacher_password
-        except (ValueError, KeyError) as e:
-            print(f"Error adding teacher: {e}")
-            return None, None
-
-    @staticmethod
-    def remove_teacher(teacher_id):
-        result = teachers_collection.update_one({"_id": teacher_id}, {"$set": {"active": False}})
+    def toggle_college_status(self, college_id: str) -> bool:
+        college = colleges_collection.find_one({"_id": college_id})
+        if not college: return False
+        new_status = not college.get("active", True)
+        result = colleges_collection.update_one({"_id": college_id}, {"$set": {"active": new_status}})
+        users_collection.update_one({"_id": college["principal_user_id"]}, {"$set": {"active": new_status}})
         return result.modified_count > 0
 
-    @staticmethod
-    def list_teachers(college_id, include_inactive=False):
-        query = {"college_id": college_id}
-        if not include_inactive: query["active"] = True
-        return list(teachers_collection.find(query))
+# --- College (Principal) Class ---
+class College(User):
+    def get_my_college_info(self) -> Dict:
+        return colleges_collection.find_one({"principal_user_id": self._id})
 
+    def _create_user(self, data: Dict[str, Any], role: str) -> Tuple[Dict, str]:
+        if users_collection.find_one({"email": data["email"]}):
+            raise ValueError(f"User with email {data['email']} already exists.")
+        
+        password = str(uuid.uuid4())[:8]
+        user_doc = {
+            "_id": str(uuid.uuid4()), "name": data["name"], "email": data["email"],
+            "_password_hash": self.hash_password(password), "role": role,
+            "college_id": self.get_my_college_info()["_id"], "active": True
+        }
+        users_collection.insert_one(user_doc)
+        return user_doc, password
+
+    def add_teacher(self, data: Dict[str, Any]) -> Tuple[Dict, str]:
+        return self._create_user(data, "teacher")
+
+    def add_student(self, data: Dict[str, Any]) -> Tuple[Dict, str]:
+        return self._create_user(data, "student")
+    
+    def list_users_by_role(self, role: str, active=True) -> List[Dict]:
+        college_id = self.get_my_college_info()["_id"]
+        return list(users_collection.find({"role": role, "college_id": college_id, "active": active}))
+
+    def mark_teacher_attendance(self, teacher_id: str, status: str):
+        today = datetime.now().strftime("%Y-%m-%d")
+        attendance_collection.update_one(
+            {"user_id": teacher_id, "date": today},
+            {"$set": {"status": status, "marked_by_id": self._id, "role": "teacher"}},
+            upsert=True
+        )
+        
 # --- Teacher Class ---
 class Teacher(User):
-    @staticmethod
-    def add_student(student_data, teacher_id, college_id, assigned_class):
-        try:
-            student_password = str(uuid.uuid4())[:8]
-            student_user = User(_id=str(uuid.uuid4()), name=student_data['name'], age=student_data['age'], address=student_data['address'], phone_no=student_data['phone_no'], email=student_data['email'], password=student_password, role="student")
-            
-            user_doc = {"_id": student_user._id, "name": student_user.name, "email": student_user.email, "_password_hash": student_user._password_hash, "role": "student"}
-            users_collection.insert_one(user_doc)
+    def get_my_college_id(self) -> str:
+        return self._raw_doc.get("college_id")
 
-            student_doc = {"_id": str(uuid.uuid4()), "name": student_data['name'], "email": student_data['email'], "assigned_class": assigned_class, "college_id": college_id, "teacher_id": teacher_id, "student_user_id": student_user._id, "active": True}
-            students_collection.insert_one(student_doc)
-            return student_doc, student_password
-        except (ValueError, KeyError) as e:
-            print(f"Error adding student: {e}")
-            return None, None
+    def get_my_classes(self) -> List[Dict]:
+        return list(classes_collection.find({"teacher_id": self._id, "college_id": self.get_my_college_id()}))
 
-    @staticmethod
-    def generate_assignment(pdf_file, topic, num_mcq, num_short, num_long, teacher_id):
-        try:
-            loader = UnstructuredPDFLoader(pdf_file)
-            documents = loader.load_and_split(text_splitter=RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200))
-            vectorstore = FAISS.from_documents(documents, embeddings)
-            retriever = vectorstore.as_retriever(search_kwargs={'k': 5})
-            
-            schema_json = json.dumps(QuizAndAnswerKey.model_json_schema(), indent=2)
-            prompt_template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-You are an expert quiz generator. Your task is to create a quiz based on the provided context and topic. You must adhere strictly to the requested number of questions for each type. Your entire output must be a single, valid JSON object that conforms to the provided JSON schema. Do not include any text before or after the JSON object.<|eot_id|><|start_header_id|>user<|end_header_id|>
-Context: {context}
-
-Topic: '{topic}'
-
-Please generate a quiz with:
-- {num_mcq} multiple-choice questions.
-- {num_short} short answer questions.
-- {num_long} long answer questions.
-
-Your response must be a JSON object matching this schema:
-{schema}
-<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
-            
-            quiz_prompt = PromptTemplate.from_template(prompt_template)
-            context_text = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
-            formatted_prompt = quiz_prompt.format(context=context_text, topic=topic, num_mcq=num_mcq, num_short=num_short, num_long=num_long, schema=schema_json)
-            response_text = llm.text_generation(prompt=formatted_prompt, max_new_tokens=4096)
-            
-            json_str = response_text.strip()
-            if '```json' in json_str:
-                match = re.search(r'```json\s*([\s\S]*?)\s*```', json_str)
-                if match:
-                    json_str = match.group(1)
-
-            parsed_quiz_data = QuizAndAnswerKey.model_validate_json(json_str)
-            
-            quiz_content = parsed_quiz_data.model_dump()
-            
-            answer_key_dict = {
-                "mcqs_answers": [{"q": q.question, "a": q.correct_answer} for q in parsed_quiz_data.mcqs],
-                "short_answers": [{"q": q.question, "a": q.answer} for q in parsed_quiz_data.short_answers],
-                "long_answers": [{"q": q.question, "a": q.answer} for q in parsed_quiz_data.long_answers],
-            }
-            
-            assignment_id = str(uuid.uuid4())
-            assignments_collection.insert_one({
-                "_id": assignment_id,
-                "teacher_id": teacher_id,
-                "topic": topic,
-                "quiz_content": quiz_content,
-                "answer_key": answer_key_dict,
-                "created_at": datetime.now(),
-                "is_sent": False,
-                "sent_to_classes": []
-            })
-            return assignment_id, quiz_content, answer_key_dict
-        
-        except Exception as e:
-            print(f"❌ Failed to generate or parse assignment: {e}")
-            return None, None, None
-
-    @staticmethod
-    def send_assignment(assignment_id, class_ids):
-        result = assignments_collection.update_one(
-            {"_id": assignment_id},
-            {"$set": {"sent_to_classes": class_ids, "is_sent": True}}
+    def mark_student_attendance(self, student_id: str, class_id: str, status: str):
+        today = datetime.now().strftime("%Y-%m-%d")
+        attendance_collection.update_one(
+            {"user_id": student_id, "class_id": class_id, "date": today},
+            {"$set": {"status": status, "marked_by_id": self._id, "role": "student"}},
+            upsert=True
         )
-        return result.modified_count > 0
+
+    def upload_study_material(self, uploaded_file, subject: str, chapter: str) -> Dict:
+        """
+        Uploads a file, processes it into chunks, creates embeddings,
+        and stores everything in MongoDB and GridFS.
+        """
+        # 1. Save the original file to GridFS
+        file_id = fs.upload_from_stream(uploaded_file.name, uploaded_file)
+        
+        # 2. Save the metadata to our main materials collection
+        material_doc = {
+            "_id": str(uuid.uuid4()), "teacher_id": self._id, "subject": subject,
+            "chapter": chapter, "gridfs_file_id": file_id,
+            "original_filename": uploaded_file.name, "uploaded_at": datetime.now(timezone.utc)
+        }
+        study_materials_collection.insert_one(material_doc)
+        
+        # 3. Process the PDF for RAG (Load -> Split -> Embed -> Store)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            uploaded_file.seek(0)
+            tmp_file.write(uploaded_file.read())
+            temp_path = tmp_file.name
+
+        try:
+            loader = PyPDFLoader(temp_path)
+            docs = loader.load()
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            splits = text_splitter.split_documents(docs)
+            
+            # Add our material_id to the metadata of each chunk for filtering later
+            for split in splits:
+                split.metadata['material_id'] = material_doc['_id']
+
+            # 4. Store the chunks and their embeddings in our vector store
+            ai_services.vector_search.add_documents(splits)
+
+        finally:
+            os.remove(temp_path)
+
+        return material_doc
+
+    def get_study_materials(self) -> List[Dict]:
+        return list(study_materials_collection.find({"teacher_id": self._id}))
+
+    def create_assignment_draft(self, class_id: str, title: str, source_material_id: str, topic: str, num_mcq: int, num_short: int, num_long: int) -> Dict:
+        material_doc = study_materials_collection.find_one({"_id": source_material_id})
+        if not material_doc:
+            raise ValueError("Source material not found.")
+        
+        gridfs_file = fs.get(material_doc['gridfs_file_id'])
+        content = gridfs_file.read().decode('utf-8', errors='ignore')
+        
+        structured_quiz = ai_services.generate_structured_quiz_from_text(content, topic, num_mcq, num_short, num_long)
+        
+        questions, answers = [], []
+        
+        for mcq in structured_quiz.mcqs:
+            q_id = str(uuid.uuid4())
+            questions.append({"q_id": q_id, "type": "MCQ", "text": mcq.question_text, "options": mcq.options})
+            answers.append({"q_id": q_id, "answer": mcq.options[mcq.correct_answer_index]})
+        for short_q in structured_quiz.short_answers:
+            q_id = str(uuid.uuid4())
+            questions.append({"q_id": q_id, "type": "SHORT", "text": short_q.question_text})
+            answers.append({"q_id": q_id, "answer": short_q.ideal_answer})
+        for long_q in structured_quiz.long_answers:
+            q_id = str(uuid.uuid4())
+            questions.append({"q_id": q_id, "type": "LONG", "text": long_q.question_text})
+            answers.append({"q_id": q_id, "answer": long_q.ideal_answer})
+
+        assignment_doc = {
+            "_id": str(uuid.uuid4()), "teacher_id": self._id, "class_id": class_id,
+            "title": title, "status": "draft", "questions": questions, "answers": answers,
+            "created_at": datetime.now(timezone.utc)
+        }
+        assignments_collection.insert_one(assignment_doc)
+        return assignment_doc
+        
+    def update_assignment_draft(self, assignment_id: str, questions: List[Dict]):
+        assignments_collection.update_one({"_id": assignment_id}, {"$set": {"questions": questions}})
+
+    def publish_assignment(self, assignment_id: str, start_time: datetime, due_time: datetime):
+        assignments_collection.update_one(
+            {"_id": assignment_id, "teacher_id": self._id},
+            {"$set": {"status": "published", "start_time": start_time, "due_time": due_time}}
+        )
 
 # --- Student Class ---
 class Student(User):
-    @staticmethod
-    def get_assignments(student_id, assigned_class, status="pending"):
-        submitted_ids = [sub['assignment_id'] for sub in submissions_collection.find(
-            {"student_id": student_id},
-            {"assignment_id": 1}
-        )]
-        
-        if status == "pending":
-            query = {"sent_to_classes": assigned_class, "_id": {"$nin": submitted_ids}}
-        elif status == "submitted":
-            query = {"_id": {"$in": submitted_ids}}
-        else: # "all"
-            query = {"sent_to_classes": assigned_class}
-        
-        return list(assignments_collection.find(query))
+    def get_my_enrollments(self) -> List[Dict]:
+        return list(enrollments_collection.find({"student_id": self._id, "status": "current"}))
 
-    @staticmethod
-    def submit_assignment(assignment_id, student_id, answers):
+    def get_assignments(self) -> Dict[str, List]:
+        enrollments = self.get_my_enrollments()
+        class_ids = [e['class_id'] for e in enrollments]
+        now = datetime.now(timezone.utc)
+        
+        assignments = list(assignments_collection.find({
+            "class_id": {"$in": class_ids},
+            "status": "published"
+        }))
+        my_submissions = list(submissions_collection.find({"student_id": self._id}))
+        submitted_ids = {s['assignment_id'] for s in my_submissions}
+
+        categorized = {"new": [], "pending": [], "missed": [], "submitted": []}
+
+        for assign in assignments:
+            assign_id = assign["_id"]
+            due_time = assign.get("due_time")
+            start_time = assign.get("start_time")
+
+            if assign_id in submitted_ids:
+                submission = next((s for s in my_submissions if s['assignment_id'] == assign_id), None)
+                assign['submission'] = submission
+                categorized["submitted"].append(assign)
+            elif due_time and now > due_time:
+                categorized["missed"].append(assign)
+            elif start_time and now >= start_time:
+                categorized["pending"].append(assign)
+            else:
+                categorized["new"].append(assign)
+                
+        return categorized
+
+    def submit_assignment(self, assignment_id: str, student_answers: List[Dict]):
+        submission_id = str(uuid.uuid4())
+        submission_doc = {
+            "_id": submission_id, "assignment_id": assignment_id, "student_id": self._id,
+            "answers": student_answers, "submitted_at": datetime.now(timezone.utc),
+            "graded": False, "score": None, "feedback": None
+        }
+        submissions_collection.insert_one(submission_doc)
+
         assignment = assignments_collection.find_one({"_id": assignment_id})
-        if not assignment:
-            return "Assignment not found."
+        questions_with_answers = []
+        for q in assignment['questions']:
+            correct_ans = next((a['answer'] for a in assignment['answers'] if a['q_id'] == q['q_id']), "N/A")
+            questions_with_answers.append({"q_id": q['q_id'], "type": q['type'], "text": q['text'], "answer": correct_ans})
             
-        answer_key = json.dumps(assignment['answer_key'], indent=2)
-        student_answers_str = json.dumps(answers, indent=2)
+        grading_result = ai_services.grade_submission(questions_with_answers, student_answers)
         
-        grade_prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-You are an intelligent grading assistant. Your task is to evaluate a student's submission against the official answer key. Provide a numerical score out of 100 and concise feedback for each question. Be fair and consider partial credit for answers that are conceptually correct but incomplete.<|eot_id|><|start_header_id|>user<|end_header_id|>
-Official Answer Key:
-{answer_key}
-
-Student's Submitted Answers:
-{student_answers_str}
-Please grade the submission.<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+        score_match = re.search(r"Total Score: (.*?)\n", grading_result)
+        feedback_match = re.search(r"Overall Feedback: (.*)", grading_result, re.DOTALL)
+        score = score_match.group(1).strip() if score_match else "Grading Error"
+        feedback = feedback_match.group(1).strip() if feedback_match else "Could not generate feedback."
         
-        grading_result = llm.text_generation(prompt=grade_prompt, max_new_tokens=2048).strip()
-        
-        submissions_collection.insert_one({
-            "assignment_id": assignment_id, "student_id": student_id, "submitted_answers": answers,
-            "grading_result": grading_result, "submitted_at": datetime.now()
-        })
-        return grading_result
+        submissions_collection.update_one(
+            {"_id": submission_id},
+            {"$set": {"graded": True, "score": score, "feedback": feedback}}
+        )
 
-    @staticmethod
-    def upload_pdf_for_summary(pdf_file, query, student_id):
-        vector_store = None
-
-        # --- OPTION 1: SAVE VECTOR STORE TO LOCAL FILES (for testing)  ---
-        VECTOR_STORE_DIR = "./student_vector_stores"
-        os.makedirs(VECTOR_STORE_DIR, exist_ok=True)
-        doc_uid = f"{student_id}_{os.path.basename(pdf_file)}"
-        vectorstore_path = os.path.join(VECTOR_STORE_DIR, doc_uid)
-        store_record = student_vector_stores_collection.find_one({"_id": doc_uid})
-        
-        if store_record and os.path.exists(vectorstore_path):
-            print("✅ Loading existing vector store from disk...")
-            vector_store = FAISS.load_local(vectorstore_path, embeddings, allow_dangerous_deserialization=True)
-        else:
-            print("⏳ No existing vector store found locally. Creating a new one...")
-            try:
-                loader = UnstructuredPDFLoader(pdf_file)
-                documents = loader.load_and_split(text_splitter=RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200))
-                if documents:
-                    vector_store = FAISS.from_documents(documents, embeddings)
-                    vector_store.save_local(vectorstore_path)
-                    student_vector_stores_collection.update_one(
-                        {"_id": doc_uid},
-                        {"$set": {"student_id": student_id, "original_filename": os.path.basename(pdf_file), "path": vectorstore_path, "created_at": datetime.now()}},
-                        upsert=True
-                    )
-                    print(f"✅ New vector store saved to {vectorstore_path}")
-                else:
-                    return "Could not extract any text from the PDF."
-            except Exception as e:
-                print(f"Error processing PDF for summary (local save): {e}")
-                return "Could not process the PDF file."
-
-        # --- OPTION 2: SAVE EMBEDDINGS TO MONGODB ATLAS ---
-        # To use this, comment out OPTION 1 and uncomment this block.
-        """
-        COLLECTION_NAME = "student_embeddings"
-        INDEX_NAME = "vector_index"
-        collection = db[COLLECTION_NAME]
-        doc_uid = f"{student_id}_{os.path.basename(pdf_file)}"
-
-        if collection.count_documents({"metadata.doc_uid": doc_uid}) > 0:
-            print("✅ Loading existing vector store from MongoDB...")
-            vector_store = MongoDBAtlasVectorSearch(collection=collection, embedding=embeddings, index_name=INDEX_NAME)
-        else:
-            print("⏳ No existing vector store found in MongoDB. Creating a new one...")
-            try:
-                loader = UnstructuredPDFLoader(pdf_file)
-                documents = loader.load_and_split(text_splitter=RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200))
-                if not documents:
-                    return "Could not extract any text from the PDF."
-
-                for doc in documents:
-                    doc.metadata["doc_uid"] = doc_uid
-                    doc.metadata["student_id"] = student_id
-                    doc.metadata["original_filename"] = os.path.basename(pdf_file)
-
-                vector_store = MongoDBAtlasVectorSearch.from_documents(
-                    documents=documents, embedding=embeddings, collection=collection, index_name=INDEX_NAME
-                )
-                print(f"✅ New vector store saved to MongoDB for doc_uid: {doc_uid}")
-            except Exception as e:
-                print(f"Error processing PDF for summary (MongoDB save): {e}")
-                return "Could not process the PDF file."
-        """
-
-        if not vector_store:
-            return "Vector store could not be created or loaded."
-
-        try:
-            # For FAISS, the whole store is already specific to the document.
-            # For MongoDB, a pre-filter is needed to isolate the correct document chunks.
-            if isinstance(vector_store, MongoDBAtlasVectorSearch):
-                retriever = vector_store.as_retriever(
-                    search_kwargs={'pre_filter': {'metadata.doc_uid': {'$eq': doc_uid}}}
-                )
-            else: # FAISS
-                retriever = vector_store.as_retriever()
-            
-            template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-You are a helpful assistant. Provide a concise summary of the document text and then answer the user's specific question based on it.<|eot_id|><|start_header_id|>user<|end_header_id|>
-Document Text: {context}
-User Query: {query}
-<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
-            
-            rag_prompt = PromptTemplate.from_template(template)
-            context_text = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(query)])
-            summary_response = llm.text_generation(prompt=rag_prompt.format(context=context_text, query=query), max_new_tokens=2048).strip()
-            return summary_response
-        except Exception as e:
-            print(f"Error during RAG query: {e}")
-            return "Could not retrieve an answer from the document."
+    def query_study_material(self, material_id: str, query: str) -> str:
+        """Queries pre-processed study material using the efficient RAG pipeline."""
+        return ai_services.answer_query_with_rag(query, material_id)

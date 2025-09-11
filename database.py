@@ -10,7 +10,6 @@ try:
     if not CONNECTION_STRING:
         raise ValueError("No MONGODB_URI found in environment variables.")
     
-    # tlsCAFile parameter tells PyMongo to use certifi's bundle of trusted certificates, which is required for a secure TLS/SSL connection to MongoDB Atlas.
     client = MongoClient(CONNECTION_STRING, tlsCAFile=certifi.where())
     
     client.admin.command('ping')
@@ -22,11 +21,19 @@ except Exception as e:
 
 if client:
     db = client['college_management_db']
+    # Core Collections
     users_collection = db['users']
     colleges_collection = db['colleges']
-    teachers_collection = db['teachers']
-    students_collection = db['students']
+    study_material_chunks_collection = db['study_material_chunks']
+    
+    # New & Expanded Collections
+    classes_collection = db['classes']
+    enrollments_collection = db['enrollments']
+    teachers_collection = db['teachers'] # Can be deprecated if we rely only on user role
+    students_collection = db['students'] # Can be deprecated
+    
+    # Feature-specific Collections
+    study_materials_collection = db['study_materials']
     assignments_collection = db['assignments']
     submissions_collection = db['submissions']
     attendance_collection = db['attendance']
-    student_vector_stores_collection = db['student_vector_stores']
